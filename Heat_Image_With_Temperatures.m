@@ -1,0 +1,687 @@
+% Working with full videos now, we are looking at our temperature data, and
+% see how it changes with time
+clc
+close all
+
+%--------Global Constants--------------------------------------------------
+fr = 400;            %Camera Frame rate
+%--------------------------------------------------------------------------
+%--------Change Variables here---------------------------------------------
+data_file = "E:\Thermal Camera Testing\12-22-2023\Ostergaard_about_3_5cm_80C-000269.mat";
+% data = load("D:\Grad Research - HDD\KINGSTON\Thermal Camera Testing\Cf_86\60C\Brigham_60C_cf_86-000072_0degree_camera_inclination.mat"); %[883,1004] Doesn't work well
+data = load(data_file); %[783,849]
+name = "Frame";                         %The Thermal Camera outputs each frame as "FrameXXX" with the number as XXX.
+start_fn = 283;
+end_fn = 349;
+n_frames = end_fn - start_fn + 1;
+dims = [256,320];
+T_min = 10;
+T_max = 50;
+% See lines 67-72
+impact_start = start_fn+8;
+impact_end = start_fn+11;
+rebound_start = start_fn+22;
+rebound_end = start_fn+32;
+
+subtract_first = true;         %first image subtraction. False = mean value subtraction
+sub_threshold = 4;              %Background filter degree C difference filter (if value - background > threshold, keep value)
+
+show_progress = false;
+show_graphs = true;             % Show each frame (pre/post impact) as a image plot
+save_fig = false;               % Save figures
+run_progress = false;           % Usefull if we want to pause our figures and space through them.
+
+show_plot = false;              %Inside limit_funciton. Shows what is evaluated each step
+
+orientation = 1;    %horizontal, vertical, radial evaluation of average temp.
+
+if(orientation == 1)    %horizontal evaluation
+    edges_function = @find_edges;
+    limit_function = @find_avg_temp;
+    subfolder = "horiz\";
+elseif(orientation == 2)   %vertical evaluation\
+    edges_function = @find_edges_vert;
+    limit_function = @find_avg_temp_vert;  
+    subfolder = "vert\";
+else
+    edges_function = @find_edges_rad;
+    limit_function = @find_avg_temp_rad;
+    subfolder = "radial\";
+end
+
+
+directory = "E:\Thermal Camera Testing\12-22-2023\saveFolder\269\";  %Where to save figures
+directory = append(directory,subfolder);
+if(~exist(directory))
+    mkdir(directory);
+end
+
+%Save plots of the droplet evaluation in motion
+% save_droplet_plots = true;
+test_no = 2;
+T_test = 80;
+save_folder = append(num2str(T_test), append("C_",append("degrees_",append("T",append(num2str(test_no),"\")))));
+droplet_plot_dir = append(directory,save_folder);
+if(~exist(droplet_plot_dir)) 
+    mkdir(droplet_plot_dir);        %create new folder to hold the plots
+end
+
+%Save average T over Time figure data
+save_temp_fig = false;       %Save temperature graphs
+temp_file_name1 = append("AvgTemp_",append(num2str(T_test), append("C_T",num2str(test_no))));
+temp_file_name2 = append("AvgTemp_Impact_Rebound_",append(num2str(T_test), append("C_T",num2str(test_no))));
+temp_file_dir1 = append(directory,temp_file_name1);
+temp_file_dir2 = append(directory,temp_file_name2);
+
+T_threshold = T_min;               % Threshold to determine if background. Basically T_min
+x_offset = 5;                   % Offset edge inward in x
+y_offset = 5;                   % Offset edge inward in y
+%--------------------------------------------------------------------------
+
+frame_data = zeros(n_frames,dims(1),dims(2));
+image_n = 1;
+
+figure('name','Droplet Impact')
+
+for n = start_fn:end_fn
+    frame_string = append(name,num2str(n));
+    image_data = data.(frame_string);
+    frame_data(image_n,:,:) = image_data;
+    imagesc(squeeze(frame_data(image_n,:,:)));     %squeeze() changes from a 1*m*n array to an m*n array
+    image_n = image_n+1;
+    title(frame_string)
+    h = gca; % Handle to currently active axes
+    set(h, 'YDir', 'reverse');
+    c = colorbar;
+    c.Label.String = "Temperature (^{\circ}C)";
+    c.Label.Rotation = 270;
+    c.Label.VerticalAlignment = "bottom";
+    caxis([T_min, T_max])
+    if(show_progress)
+%         pause(0.25)
+        pause()
+    end
+    clf
+end
+close 'Droplet Impact'
+
+%% Now lets add background image subtraction using an average filter that only subtracts below a threshold
+background = zeros(dims(1),dims(2));
+
+if(~subtract_first)
+    for i = 1:n_frames
+        background = background + squeeze(frame_data(i,:,:));
+    end
+    background = background/n_frames;
+end
+
+first_frame_name = append("Frame", num2str(start_fn));
+background_first_image = data.(first_frame_name);
+if(subtract_first)
+    background = background_first_image;
+end
+
+figure('name','Background Image')
+imagesc(background);
+h = gca; % Handle to currently active axes
+set(h, 'YDir', 'reverse');
+c = colorbar;
+c.Label.String = "Temperature (^{\circ}C)";
+c.Label.Rotation = 270;
+c.Label.VerticalAlignment = "bottom";
+caxis([T_min, T_max])
+caxis([T_min, T_max])
+pause(2)
+close 'Background Image'
+
+subtracted_frame_data = zeros(n_frames,dims(1),dims(2));
+sub_threshold = sub_threshold;                              %defined at the top
+
+for i = 1:n_frames
+    subtracted_frame_data(i,:,:) = apply_background_sub(squeeze(frame_data(i,:,:)), background, dims, sub_threshold,T_min);    
+end
+
+%---------------------May need to change-------------------------------
+% I don't like that we reuse a previous variable name and then throw in
+% constants with no explaination. Lets improve this.
+start_n = start_fn;
+start_fn = impact_start-start_n+1;  
+end_fn = impact_end-start_n;   
+    
+end_impact = rebound_start-start_n; 
+start_rebound = rebound_end-start_n;   
+
+pre_impact_frames = zeros((end_fn-start_fn+1),dims(1),dims(2));
+post_impact_frames = zeros((start_rebound-end_impact+1),dims(1),dims(2));
+impact_frames = zeros(rebound_start-impact_start,dims(1),dims(2));
+
+counter = 1;
+
+figure('name','Subtracted Video')
+for i = start_fn:end_fn
+    pre_impact_frames(counter,:,:) = squeeze(subtracted_frame_data(i,:,:));
+    imagesc(squeeze(subtracted_frame_data(i,:,:)))
+    h = gca; % Handle to currently active axes
+    set(h, 'YDir', 'reverse');
+    c = colorbar;
+    c.Label.String = "Temperature (^{\circ}C)";
+    c.Label.Rotation = 270;
+    c.Label.VerticalAlignment = "bottom";
+    caxis([T_min, T_max])
+    plot_title = append('Frame ', num2str(i));
+    title(plot_title)
+    if(run_progress)
+        xlabel('Press Space to proceed')
+        pause
+    else
+        pause(0.25)
+    end
+    clf
+    counter = counter+1;
+end
+counter = 1;
+for i = end_fn+1:end_impact-1
+    impact_frames(counter,:,:) = squeeze(subtracted_frame_data(i,:,:));
+    imagesc(squeeze(subtracted_frame_data(i,:,:)))
+    h = gca; % Handle to currently active axes
+    set(h, 'YDir', 'reverse');
+    c = colorbar;
+    c.Label.String = "Temperature (^{\circ}C)";
+    c.Label.Rotation = 270;
+    c.Label.VerticalAlignment = "bottom";
+    caxis([T_min, T_max])
+    plot_title = append('Frame ', num2str(i));
+    title(plot_title)
+    if(run_progress)
+        xlabel('Press Space to proceed')
+        pause
+    else
+        pause(0.25)
+    end
+    clf
+    counter = counter+1;
+end
+counter = 1;
+for i = end_impact:start_rebound
+    post_impact_frames(counter,:,:) = squeeze(subtracted_frame_data(i,:,:));
+    imagesc(squeeze(subtracted_frame_data(i,:,:)))
+    h = gca; % Handle to currently active axes
+    set(h, 'YDir', 'reverse');
+    c = colorbar;
+    c.Label.String = "Temperature (^{\circ}C)";
+    c.Label.Rotation = 270;
+    c.Label.VerticalAlignment = "bottom";
+    caxis([T_min, T_max])
+    plot_title = append('Frame ', num2str(i));
+    title(plot_title)
+    if(run_progress)
+        xlabel('Press Space to proceed')
+        pause
+    else
+        pause(0.25)
+    end
+    clf
+    counter = counter + 1;
+end
+close 'Subtracted Video'
+%% Using our subtracted images, we will now average all temperature above T_min C (the background temp) for each frame
+
+n_frames_eval = (start_rebound + 1);
+avg_Temp = zeros(n_frames_eval,1);
+n = start_fn;
+%%
+line_limits_pre = {};   %struct to hold data for evaluating temperatures across each droplet.
+line_limits_post = {};
+line_limits_impact = {};
+
+n_pre = length(pre_impact_frames(:,1,1));
+n_post = length(post_impact_frames(:,1,1));
+n_imp = length(impact_frames(:,1,1));
+t = zeros(n_frames_eval,1);
+%Evaluate area to average temeperature across impact and departure.
+for i = 1:n_pre
+    line_limits_pre{i} = edges_function(squeeze(pre_impact_frames(i,:,:)),T_threshold);
+end
+for i = 1:n_post
+    line_limits_post{i} = edges_function(squeeze(post_impact_frames(i,:,:)),T_threshold);
+end
+for i = 1:n_imp
+    line_limits_impact{i} = edges_function(squeeze(impact_frames(i,:,:)),T_threshold);
+end
+pre_impact_temps = zeros(n_pre,1);
+post_impact_temps = zeros(n_post,1);
+
+% Determine average droplet temperature over the boundaries of the droplet
+
+if(save_fig == true)
+    disp("Saving Impact Figures.")
+end
+
+if(show_graphs)
+    fig = figure('name','Droplet Evaluation');
+end
+
+for i = 1:(n_pre + n_post + n_imp)
+    t(i) = (i-1)/fr;
+end
+
+for i = 1:length(pre_impact_temps)
+    pre_impact_temps(i) = limit_function(squeeze(pre_impact_frames(i,:,:)),line_limits_pre{i}, x_offset,y_offset,show_plot);
+    save_name = append('PreImpact', num2str(i));
+    save_name_dir = append(droplet_plot_dir,save_name);
+    if(show_graphs)
+        display_plot(squeeze(pre_impact_frames(i,:,:)), line_limits_pre{i},save_fig,save_name_dir,fig,save_name,T_min,T_max,dims);
+    end
+end
+
+if(save_fig == true)
+    disp("Saving Rebound Figures.")
+end
+
+for i = 1:length(post_impact_temps)
+    post_impact_temps(i) = limit_function(squeeze(post_impact_frames(i,:,:)),line_limits_post{i}, x_offset,y_offset,show_plot);
+    save_name = append('PostImpact', num2str(i));
+    save_name_dir = append(droplet_plot_dir,save_name);
+    if(show_graphs)
+        display_plot(squeeze(post_impact_frames(i,:,:)), line_limits_post{i},save_fig,save_name_dir, fig,save_name,T_min,T_max,dims);
+    end
+end
+
+show_plot = false;      %Don't want figure if limit_function is called again.
+
+% t_pre_save = t_pre;
+%%
+% Now we can determine  our timing.
+% convert s - ms (for scaling reasons)
+
+t_pre = 1000 * ((impact_start+1:impact_end)-impact_start)./(fr);
+%t_Imp = 1000 * ((impact_end+1:rebound_start-1)-impact_start)./(fr);
+t_post = 1000 * ((rebound_start:rebound_end)-impact_start)./(fr);
+
+for i = 1:length(subtracted_frame_data(:,1,1))
+    line_limit = edges_function(squeeze(subtracted_frame_data(i,:,:)),T_threshold);
+    if(~isempty(line_limit))
+        avg_Temp(i) = limit_function(squeeze(subtracted_frame_data(i,:,:)),line_limit,x_offset,y_offset,show_plot);
+    end
+    t(i) = (1/fr) * (i-1);             %determine time step with frame rate        
+end
+
+%% Plot of Droplet Tempurature Pre/Post Impact
+fig = figure('name','Droplet Temp over Time');
+hold on
+plot(t_pre,pre_impact_temps,'-bo')
+plot(t_post,post_impact_temps,'-ro')
+hold off
+xlabel('time (ms)')
+ylabel('Average Droplet Temp (C)')
+
+if(save_fig)
+    save_name = append(droplet_plot_dir ,"Temp_Plot");
+    saveas(fig,save_name,'jpg')
+end
+
+%% Plot of Post Temperature image plotted with the average temperature
+% this is more important than the previous section, I think, as the
+% pre-impact temps are wierd. I think I need one image before I drop my
+% droplet and use that as my pre-droplet temp for all tests.
+
+avg_post_temp = mean(post_impact_temps);
+fig = figure('name','Post Impact Temperature v.s. Average');
+hold on
+plot(t_post, post_impact_temps, '-ro')
+plot([t_post(1), t_post(end)], [avg_post_temp, avg_post_temp], '-bo')
+hold off
+legend(['Droplet Temp','Average over time'],'location','north')
+
+xlabel('time (ms)')
+ylabel('Average Droplet Temp (C)')
+
+if(save_fig)
+    save_name = append(droplet_plot_dir,"Average Post Impact Temp");
+    saveas(fig,save_name,'jpg')
+    disp("Average Temp Figure Saved")
+end
+
+%% Statistics
+pre_impact_Average = mean(pre_impact_temps);
+post_impact_Average = mean(post_impact_temps);
+sd_pre_impact = std(pre_impact_temps);
+sd_post_impact = std(post_impact_temps);
+
+fig = figure('name','Statistics');
+subplot(1,2,1)
+bar([1 2],[pre_impact_Average,post_impact_Average])
+xlabel('Pre/Post Averages')
+ylabel('Average Droplet Temp over Time (^\circ C)')
+subplot(1,2,2)
+bar([1 2],[sd_pre_impact, sd_post_impact])
+xlabel('Pre/Post Temp sd')
+ylabel('Standard deviation of Temp (^\circ C)')
+if(save_fig)
+    save_name = append(droplet_plot_dir ,"Statistics");
+    saveas(fig,save_name,'jpg')
+end
+
+%% --------------------FUNCTIONS-------------------------------------------
+function new_frame = apply_background_sub(img, background, dims, sub_threshold,T_min)
+    new_frame = zeros(dims(1),dims(2));
+    for i = 1:dims(1)
+        for j = 1:dims(2)
+            if(abs(img(i,j) - background(i,j)) > sub_threshold)          %Only keep the unchanged frame. Keep everything else at T_min.
+                new_frame(i,j) = img(i,j);                               %works for hot/cold background
+            else
+                new_frame(i,j) = T_min;             
+            end
+        end
+    end
+end
+function avg_T = find_avg_T(img, threshold, dims)
+    avg_T = 0;
+    n_sum = 0;
+
+    for i = 1:dims(1)
+        for j = 1:dims(2)
+            if(img(i,j) > threshold)
+                avg_T = avg_T + img(i,j);
+                n_sum = n_sum+1;
+            end
+        end
+    end
+
+    avg_T = avg_T/n_sum;
+end
+function line_limits = find_edges(img,threshold)
+    limits = size(img);
+    
+%     edges = [];
+    line_limits = [];
+    %Search from top of the image
+    % If a pixel is found (>threshold), mark location, go to next line.
+    for i = 1:limits(1)
+        for j = 1:limits(2)
+            if(img(i,j) > threshold)
+                line_limits = [line_limits;[i,j,0,0]];
+                break;     %I break because I don't need to search this again.
+            end
+        end
+    end
+
+%     line_limits = zeros(length(edges),4);
+    counter = 1;
+    %Search from bottom
+    %   Using only the lines found above, search from right to first pixel
+    %   >threshold
+    if(~isempty(line_limits))
+        l = size(line_limits);
+        iterations = l(1);
+        for i = 1:iterations
+            y_pos = line_limits(i,1);
+            for j = limits(2):-1:line_limits(i,2)     %Search from right side to the initial point from out image
+                if(img(y_pos,j) > threshold)
+                    line_limits(i,3) = y_pos;
+                    line_limits(i,4) = j;
+                    counter = counter+1;
+                    break
+                end
+            end
+        end
+    end
+end
+function avg_temp = find_avg_temp(img, line_limits,x_offset,y_offset,show_plot)
+    n_lines = length(line_limits(:,1));
+    running_avg = 0;
+    n_temps = 0;
+    for i = 1+y_offset:n_lines-y_offset
+        for x = line_limits(i,2)+x_offset:line_limits(i,4)-x_offset         %Add our offset here to keep off edge
+            for y = line_limits(i,1):line_limits(i,3)
+                running_avg = running_avg + img(y,x);           %Maybe img(y,x)
+                n_temps = n_temps+1;
+            end
+        end
+    end
+    T_min = 10;
+    T_max = 50;
+%     show_plot = true;
+    if(show_plot)
+        fig = figure('name','Temperature Resoloution Check');
+        title('Limit Evaluation Lines')
+        imagesc(img)
+        hold on
+        for i = 1:length(line_limits)
+            limit = line_limits(i,:);
+            y_lim = [limit(1),limit(3)];
+            x_lim = [limit(2)+x_offset,limit(4)-x_offset]; 
+            plot([x_lim(1),x_lim(2)],[y_lim(1),y_lim(2)],'-o')
+        end
+        hold off
+        h = gca; % Handle to currently active axes
+        set(h, 'YDir', 'reverse');
+        c = colorbar;
+        c.Label.String = "Temperature (^{\circ}C)";
+        c.Label.Rotation = 270;
+        c.Label.VerticalAlignment = "bottom";
+        caxis([T_min, T_max])
+        caxis([T_min, T_max])
+        pause()
+        close 'Temperature Resoloution Check'
+    end
+
+    avg_temp = running_avg/n_temps;
+end
+function no_return = display_plot(img, line_limits,save_fig,save_name, fig,plot_title,T_min,T_max,dims)
+    no_return = 0;
+    figure(fig)
+    hold on
+    imagesc(img)
+    for i = 1:length(line_limits)
+        limit = line_limits(i,:);
+        y_lim = [limit(1),limit(3)];
+        x_lim = [limit(2),limit(4)]; 
+        scatter([x_lim(1),x_lim(2)],[y_lim(1),y_lim(2)])
+    end
+    xlim([0,dims(2)])
+    ylim([0,dims(1)])
+    h = gca; % Handle to currently active axes
+    set(h, 'YDir', 'reverse');
+    c = colorbar;
+    c.Label.String = "Temperature (^{\circ}C)";
+    c.Label.Rotation = 270;
+    c.Label.VerticalAlignment = "bottom";
+    caxis([T_min, T_max])
+    caxis([T_min, T_max])
+    title(plot_title)
+    hold off
+    if(save_fig)
+        saveas(fig,save_name,'jpg')
+    end
+    pause(0.5)
+end
+
+%% New Functions for average temeprature reading - Vertical and radial
+function line_limits = find_edges_vert(img,threshold)       %Same as above, but now we have veritcal lines
+    %Define the edges of the figure
+    limits = size(img);
+
+    %Define the variable to hold the ends
+    line_limits = [];
+
+    show_points = false;     % see progress of the edge finding
+    if(show_points)
+        figure('name', 'test')
+        imagesc(img)
+        hold on
+    end
+    %Search from left of the image
+    % If a pixel is found (>threshold), mark location, go to next line.
+    for j = 1:limits(2)
+        for i = 1:limits(1)
+            if(img(i,j) > threshold)
+                line_limits = [line_limits;[i,j,0,0]];
+                if(show_points)
+                    scatter(j,i);
+                end
+                break;     %I break because I don't need to search this again.
+            end
+        end
+    end
+
+    counter = 1;
+    %Search from bottom
+    %   Using only the lines found above, search from right to first pixel
+    %   >threshold
+
+    if(~isempty(line_limits))
+        l = size(line_limits);
+        iterations = l(1);
+        for i = 1:iterations
+            x_pos = line_limits(i,2);
+            for j = limits(1):-1:line_limits(i,1)     %Search from right side to the initial point from out image
+                if(img(j,x_pos) > threshold)
+                    line_limits(i,3) = j;
+                    line_limits(i,4) = x_pos;
+                    counter = counter+1;
+                    if(show_points)
+                        scatter(x_pos,j)
+                    end
+                   
+                    break
+                end
+            end
+        end
+        if(show_points)
+            close 'test'
+        end
+    end
+end
+function avg_temp = find_avg_temp_vert(img, line_limits,x_offset,y_offset,show_plot)
+    n_lines = length(line_limits(:,1));
+    running_avg = 0;
+    n_temps = 0;
+    for i = 1+y_offset:n_lines-y_offset
+%         for x = line_limits(i,2)+x_offset:line_limits(i,4)-x_offset         %Add our offset here to keep off edge
+            for y = line_limits(i,1):line_limits(i,3)
+                x = line_limits(i,2);
+                running_avg = running_avg + img(y,x);           %Maybe img(y,x)
+                n_temps = n_temps+1;
+            end
+%         end
+    end
+
+    if(show_plot)
+        figure('name','Temperature Resoloution Check')
+        title('Limit Evaluation Lines')
+        imagesc(img)
+        hold on
+        for i = 1:length(line_limits)
+            limit = line_limits(i,:);
+            y_lim = [limit(1)+y_offset,limit(3)-y_offset];
+            x_lim = [limit(2),limit(4)]; 
+            plot([x_lim(1),x_lim(2)],[y_lim(1),y_lim(2)],'-o')
+        end
+        hold off
+        h = gca; % Handle to currently active axes
+        set(h, 'YDir', 'reverse');
+        c = colorbar;
+        c.Label.String = "Temperature (^{\circ}C)";
+        c.Label.Rotation = 270;
+        c.Label.VerticalAlignment = "bottom";
+        caxis([T_min, T_max])
+        caxis([T_min, T_max])
+        pause(2)
+        close 'Temperature Resoloution Check'
+    end
+    avg_temp = running_avg/n_temps;
+end
+
+%% Radial
+function line_limits = find_edges_rad(img, threshold)
+    %Define the edges of the figure
+    limits = size(img);
+
+    %Define the variable to hold the ends
+    line_limits = [];
+
+    show_points = false;     % see progress of the edge finding
+    if(show_points)
+        figure('name', 'test')
+        imagesc(img)
+        hold on
+    end
+
+    %Basic idea:
+    %   1. Find the center of the droplet by finding the top, bottom, left,
+    %and right most points, then finding the intersection of the lines
+    %   2. From the center start going outward by a radial distance and
+    %   adding points to your list of evalutated points.
+    %   3. Take an average of the points.
+
+    % Can I use imageprops for this?
+    stats = regionprops(img>threshold,'Centroid', 'MajorAxisLength','MinorAxisLength');
+    center = stats.Centroid;
+    MajorAxis = stats.MajorAxisLength;
+    MinorAxis =stats.MinorAxisLength;
+
+    %Now, minor Axis should be the smaller axis, but I am making sure here.
+    minDiameter = min(MajorAxis,MinorAxis);
+    reduction_factor = 0.8;
+    thresh_dist = minDiameter*reduction_factor;
+
+    %Idea - make a distance function and take in all points within a
+    %certain distance from the center. 
+
+    function length = find_distance(X1,X2)
+        length = sqrt((X1(1) - X2(1))^2 + (X1(2) - X2(2))^2);
+    end
+
+    distance_array = zeros(limits(1),limits(2));
+    for i = 1:limits(1)
+        for j = 1:limits(2)
+            distance_array(i,j) = find_distance([i,j], center);
+        end
+    end
+
+    %now we have an array that is all zeros excpet for a circle around the
+    %center. We just need the edges around the center of the circle now.
+    
+    %search from left
+    for i = 1:limits(1)
+        for j = 1:limits(2)
+            if(distance_array(i,j) < thresh_dist)
+                line_limits = [line_limits,[i,j]];
+                break;
+            end
+        end
+    end
+    counter = 0;
+    num = size(line_limits);
+
+    %search from right
+    for i = limits(1):-1:1
+        for j = limits(2):-1:1
+            if(distance_array(i,j) < thresh_dist)
+                if(counter ~= 0 || counter ~= num(1))       %I don't want to recount the top and bottom point
+                    line_limits = [line_limits,[i,j]];
+                    break;
+                end
+                counter = counter + 1;
+            end
+        end
+    end
+
+%now we have line_limits
+    
+end
+
+function avg_temp = find_avg_temp_rad(img,line_limits,show_plot)
+    counter = 0;
+    avg_temp = 0;
+
+    dims_ll = size(line_limits);
+
+    %first add all the line limits
+    for i = 1:dims_ll(1)
+        avg_temp = avg_temp + img(line_limits(i,1),line_limits(i,2));
+    end
+    %sweet now we need all the other parts.
+    
+end
